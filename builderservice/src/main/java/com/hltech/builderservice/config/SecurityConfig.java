@@ -18,4 +18,4 @@ public class SecurityConfig {
                 .formLogin(form -> form.disable())
                 .build();
     }
-}
+} 

@@ -1,19 +1,15 @@
 package com.hltech.builderservice.entity;
 
 import jakarta.persistence.*;
-
 import org.hibernate.annotations.JdbcTypeCode;
 import org.hibernate.type.SqlTypes;
-
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.json.JsonMapper;
 
 import java.time.LocalDateTime;
-import java.util.ArrayList;
-import java.util.List;
 
 @Entity
-@Table(name = "layouts")
+@Table(name = "layout")
 public class Layout {
 
     private static final JsonMapper MAPPER = JsonMapper.builder().build();
@@ -25,17 +21,16 @@ public class Layout {
     @Column(nullable = false, length = 255)
     private String name;
 
-    @Column(name = "layout_type", nullable = false, length = 50)
-    private String layoutType;
-
-    // Stored as a JSON string so Hibernate needs no Jackson mapping.
-    // Never null: defaults to {}
-    @JdbcTypeCode(SqlTypes.JSON)
-    @Column(name = "settings", columnDefinition = "jsonb", nullable = false)
-    private String settingsJson = "{}";
+    @Column(nullable = false)
+    private Integer position = 0;
 
     @Column(name = "is_active", nullable = false)
     private Boolean isActive = true;
+
+    // everything from the builder: colors, font size, drag/drop items, etc.
+    @JdbcTypeCode(SqlTypes.JSON)
+    @Column(name = "layout_json", columnDefinition = "jsonb", nullable = false)
+    private String layoutJson = "{}";
 
     @Column(name = "created_at", nullable = false, updatable = false)
     private LocalDateTime createdAt;
@@ -43,102 +38,42 @@ public class Layout {
     @Column(name = "updated_at", nullable = false)
     private LocalDateTime updatedAt;
 
-    @OneToMany(mappedBy = "layout", cascade = CascadeType.ALL, orphanRemoval = true)
-    @OrderBy("position ASC")
-    private List<LayoutProduct> products = new ArrayList<>();
-
     @PrePersist
-    protected void onCreate() {
-        LocalDateTime now = LocalDateTime.now();
-        createdAt = now;
-        updatedAt = now;
-
-        if (isActive == null) {
-            isActive = true;
-        }
-        if (settingsJson == null || settingsJson.isBlank()) {
-            settingsJson = "{}";
-        }
+    void onCreate() {
+        createdAt = updatedAt = LocalDateTime.now();
+        if (isActive == null) isActive = true;
+        if (position == null) position = 0;
     }
 
     @PreUpdate
-    protected void onUpdate() {
+    void onUpdate() {
         updatedAt = LocalDateTime.now();
-        if (settingsJson == null || settingsJson.isBlank()) {
-            settingsJson = "{}";
-        }
     }
 
-    /** Returns {} if the value is null, JSON null or missing; otherwise the data unchanged. */
-    public static JsonNode normalizeSettings(JsonNode node) {
-        if (node == null || node.isNull() || node.isMissingNode()) {
-            return MAPPER.createObjectNode();
-        }
-        return node;
-    }
+    public Layout() {}
 
-    /** True if settings contains data (not just {}). */
-    public boolean hasSettingsData() {
-        return !getSettings().isEmpty();
-    }
-
-    public Layout() {
-    }
-
-    public Long getId() {
-        return id;
-    }
-
-    public String getName() {
-        return name;
-    }
-
-    public void setName(String name) {
-        this.name = name;
-    }
-
-    public String getLayoutType() {
-        return layoutType;
-    }
-
-    public void setLayoutType(String layoutType) {
-        this.layoutType = layoutType;
-    }
-
-    // API-facing getter: JSON string in DB -> real JSON in the response
-    public JsonNode getSettings() {
+    public JsonNode getLayout() {
         try {
-            if (settingsJson == null || settingsJson.isBlank()) {
-                return MAPPER.createObjectNode();
-            }
-            return normalizeSettings(MAPPER.readTree(settingsJson));
+            return MAPPER.readTree(layoutJson);
         } catch (RuntimeException e) {
             return MAPPER.createObjectNode();
         }
     }
 
-    // API-facing setter: JsonNode from request -> JSON string for the DB
-    public void setSettings(JsonNode settings) {
-        this.settingsJson = MAPPER.writeValueAsString(normalizeSettings(settings));
+    public void setLayout(JsonNode layout) {
+        this.layoutJson = MAPPER.writeValueAsString(layout);
     }
 
-    public Boolean getIsActive() {
-        return isActive;
-    }
+    public String getLayoutJson() { return layoutJson; }
+    public void setLayoutJson(String layoutJson) { this.layoutJson = layoutJson; }
 
-    public void setIsActive(Boolean isActive) {
-        this.isActive = isActive;
-    }
-
-    public LocalDateTime getCreatedAt() {
-        return createdAt;
-    }
-
-    public LocalDateTime getUpdatedAt() {
-        return updatedAt;
-    }
-
-    public List<LayoutProduct> getProducts() {
-        return products;
-    }
+    public Long getId() { return id; }
+    public String getName() { return name; }
+    public void setName(String name) { this.name = name; }
+    public Integer getPosition() { return position; }
+    public void setPosition(Integer position) { this.position = position; }
+    public Boolean getIsActive() { return isActive; }
+    public void setIsActive(Boolean isActive) { this.isActive = isActive; }
+    public LocalDateTime getCreatedAt() { return createdAt; }
+    public LocalDateTime getUpdatedAt() { return updatedAt; }
 }

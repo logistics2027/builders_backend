@@ -1,181 +1,106 @@
 package com.hltech.builderservice.service;
 
-import com.hltech.builderservice.dto.LayoutProductRequest;
 import com.hltech.builderservice.dto.LayoutRequest;
+import com.hltech.builderservice.dto.LayoutResponse;
+import com.hltech.builderservice.dto.LayoutSummaryResponse;
 import com.hltech.builderservice.entity.Layout;
-import com.hltech.builderservice.entity.LayoutProduct;
-import com.hltech.builderservice.repo.LayoutProductRepository;
 import com.hltech.builderservice.repo.LayoutRepository;
 
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.server.ResponseStatusException;
+import tools.jackson.databind.JsonNode;
 
+import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
+import java.util.function.Function;
+import java.util.stream.Collectors;
 
 @Service
 @Transactional
 public class LayoutService {
 
     private final LayoutRepository layoutRepository;
-    private final LayoutProductRepository productRepository;
+    private final LayoutDistributionService distributionService;
 
-    public LayoutService(
-            LayoutRepository layoutRepository,
-            LayoutProductRepository productRepository) {
+    public LayoutService(LayoutRepository layoutRepository,
+                         LayoutDistributionService distributionService) {
         this.layoutRepository = layoutRepository;
-        this.productRepository = productRepository;
+        this.distributionService = distributionService;
     }
 
-    // Create layout
-    public Layout createLayout(LayoutRequest request) {
-        Layout layout = new Layout();
-
-        layout.setName(request.name());
-        layout.setLayoutType(request.layoutType());
-
-        // Safeguard: null / empty -> {}, data -> kept as is
-        layout.setSettings(Layout.normalizeSettings(request.settings()));
-
-        layout.setIsActive(
-            request.isActive() == null ? true : request.isActive()
-        );
-
-        return layoutRepository.save(layout);
+    /** First Save click: new layout goes to the end of the order. */
+    public LayoutResponse create(LayoutRequest r) {
+        validate(r.layout());
+        Layout l = new Layout();
+        l.setName(r.name());
+        l.setIsActive(r.isActive() == null ? true : r.isActive());
+        l.setLayout(r.layout());
+        l.setPosition(layoutRepository.findMaxPosition() + 1);
+        return LayoutResponse.from(layoutRepository.save(l));
     }
 
-    // Get all layouts
+    /** Every next Save click: everything is stored again in the layout table. */
+    public LayoutResponse update(Long id, LayoutRequest r) {
+        validate(r.layout());
+        Layout l = getEntity(id);
+        l.setName(r.name());
+        if (r.isActive() != null) l.setIsActive(r.isActive());
+        l.setLayout(r.layout());
+        return LayoutResponse.from(layoutRepository.save(l));
+    }
+
+    /** Open one layout with its full JSON. */
     @Transactional(readOnly = true)
-    public List<Layout> getAllLayouts() {
-        return layoutRepository.findAll();
+    public LayoutResponse getById(Long id) {
+        return LayoutResponse.from(getEntity(id));
     }
 
-    // Get layout by ID
+    /** Ordered list without JSON. */
     @Transactional(readOnly = true)
-    public Layout getLayoutById(Long id) {
-        return findLayout(id);
+    public List<LayoutSummaryResponse> getAll() {
+        return layoutRepository.findAllByOrderByPositionAsc().stream()
+                .map(LayoutSummaryResponse::from).toList();
     }
 
-    // Update layout
-    public Layout updateLayout(
-            Long id,
-            LayoutRequest request) {
-
-        Layout layout = findLayout(id);
-
-        if (request.name() != null) {
-            layout.setName(request.name());
-        }
-
-        if (request.layoutType() != null) {
-            layout.setLayoutType(request.layoutType());
-        }
-
-        // Field omitted -> keep existing settings.
-        // Field sent as {} -> clears settings to empty object.
-        // Field sent with data -> replaces settings.
-        if (request.settings() != null) {
-            layout.setSettings(Layout.normalizeSettings(request.settings()));
-        }
-
-        if (request.isActive() != null) {
-            layout.setIsActive(request.isActive());
-        }
-
-        return layoutRepository.save(layout);
+    /** Deletes the layout and its published copy. */
+    public void delete(Long id) {
+        Layout l = getEntity(id);
+        distributionService.deleteByLayoutId(id);
+        layoutRepository.delete(l);
     }
 
-    // Delete layout and its assigned products
-    public void deleteLayout(Long id) {
-        Layout layout = findLayout(id);
-        layoutRepository.delete(layout);
-    }
+    /** Drag and drop order. Must contain every layout exactly once. */
+    public List<LayoutSummaryResponse> reorder(List<Long> layoutIds) {
+        List<Layout> layouts = layoutRepository.findAll();
+        Map<Long, Layout> byId = layouts.stream()
+                .collect(Collectors.toMap(Layout::getId, Function.identity()));
 
-    // Add product to layout
-    public LayoutProduct addProduct(
-            Long layoutId,
-            LayoutProductRequest request) {
-
-        Layout layout = findLayout(layoutId);
-
-        LayoutProduct product = new LayoutProduct();
-        product.setLayout(layout);
-        product.setProductId(request.productId());
-        product.setPosition(request.position());
-        product.setCustomTitle(request.customTitle());
-        product.setCustomBadge(request.customBadge());
-
-        return productRepository.save(product);
-    }
-
-    // Get products assigned to a layout
-    @Transactional(readOnly = true)
-    public List<LayoutProduct> getProducts(Long layoutId) {
-        findLayout(layoutId);
-
-        return productRepository
-                .findByLayoutIdOrderByPositionAsc(layoutId);
-    }
-
-    // Update product assignment
-    public LayoutProduct updateProduct(
-            Long layoutId,
-            Long productMappingId,
-            LayoutProductRequest request) {
-
-        findLayout(layoutId);
-
-        LayoutProduct product = findProductInLayout(layoutId, productMappingId);
-
-        if (request.productId() != null) {
-            if (request.productId().isBlank()) {
-                throw new ResponseStatusException(
-                        HttpStatus.BAD_REQUEST,
-                        "Product ID cannot be blank"
-                );
-            }
-            product.setProductId(request.productId());
+        if (layoutIds.size() != new HashSet<>(layoutIds).size()
+                || !byId.keySet().equals(new HashSet<>(layoutIds))) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
+                    "layoutIds must contain every existing layout exactly once");
         }
 
-        if (request.position() != null) {
-            product.setPosition(request.position());
+        for (int i = 0; i < layoutIds.size(); i++) {
+            byId.get(layoutIds.get(i)).setPosition(i);
         }
+        layoutRepository.saveAll(layouts);
+        distributionService.syncPositions(layouts); // keep storefront order in sync
 
-        if (request.customTitle() != null) {
-            product.setCustomTitle(request.customTitle());
-        }
-
-        if (request.customBadge() != null) {
-            product.setCustomBadge(request.customBadge());
-        }
-
-        return productRepository.save(product);
+        return layoutIds.stream().map(byId::get).map(LayoutSummaryResponse::from).toList();
     }
 
-    // Remove a product assignment without deleting the actual product
-    public void removeProduct(Long layoutId, Long productMappingId) {
-        findLayout(layoutId);
-
-        LayoutProduct product = findProductInLayout(layoutId, productMappingId);
-
-        productRepository.delete(product);
+    private Layout getEntity(Long id) {
+        return layoutRepository.findById(id).orElseThrow(() ->
+                new ResponseStatusException(HttpStatus.NOT_FOUND, "Layout not found with ID: " + id));
     }
 
-    private LayoutProduct findProductInLayout(Long layoutId, Long productMappingId) {
-        return productRepository.findById(productMappingId)
-                .filter(p -> p.getLayout().getId().equals(layoutId))
-                .orElseThrow(() -> new ResponseStatusException(
-                        HttpStatus.NOT_FOUND,
-                        "Product assignment not found in this layout"
-                ));
-    }
-
-    private Layout findLayout(Long id) {
-        return layoutRepository.findById(id)
-                .orElseThrow(() -> new ResponseStatusException(
-                        HttpStatus.NOT_FOUND,
-                        "Layout not found with ID: " + id
-                ));
+    private void validate(JsonNode layout) {
+        if (layout == null || !layout.isObject()) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "layout must be a JSON object");
+        }
     }
 }
